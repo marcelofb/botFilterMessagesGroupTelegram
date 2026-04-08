@@ -1,0 +1,16 @@
+{
+  "name": "telegram-forwarder",
+  "version": "1.0.0",
+  "description": "Reenvía mensajes de un usuario específico en un grupo de Telegram a otro chat",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "node index.js",
+    "list": "node index.js --list"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "input": "^1.0.1",
+    "telegram": "^2.26.22"
+  }
+}
