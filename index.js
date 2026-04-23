@@ -1,5 +1,7 @@
 const { TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
+const { Raw } = require("telegram/events");
+const { UpdateConnectionState } = require("telegram/network");
 const input = require("input");
 const fs = require("fs");
 const path = require("path");
@@ -14,6 +16,32 @@ function loadSession() {
 
 function saveSession(str) {
   fs.writeFileSync(SESSION_FILE, str, "utf-8");
+}
+
+// Envía una copia del mensaje como mensaje nuevo (no como forward)
+// para que Telegram dispare la notificación push en el destino
+async function enviarCopia(client, dest, msg) {
+  // Ignorar mensajes de servicio (pin, cambio de nombre del grupo, etc.)
+  if (msg.className === "MessageService") return false;
+
+  const text = msg.message || "";
+  const entities = msg.entities && msg.entities.length ? msg.entities : undefined;
+
+  if (msg.media) {
+    await client.sendFile(dest, {
+      file: msg.media,
+      caption: text,
+      formattingEntities: entities,
+    });
+  } else if (text) {
+    await client.sendMessage(dest, {
+      message: text,
+      formattingEntities: entities,
+    });
+  } else {
+    return false;
+  }
+  return true;
 }
 
 // Acepta username (con o sin @) o ID numérico como string
@@ -44,6 +72,52 @@ async function main() {
       autoReconnect: true,
       sequentialUpdates: true,
     }
+  );
+
+  let reconnecting = false;
+  let seenConnectedState = false;
+
+  client.onError = async (err) => {
+    if (!err) return;
+
+    if (err.message === "TIMEOUT") {
+      console.log("[conexion] Timeout detectado; la libreria intentara reconectar automaticamente.");
+      return;
+    }
+
+    console.error("[client.onError]", err.message);
+  };
+
+  client.addEventHandler(
+    (update) => {
+      if (!(update instanceof UpdateConnectionState)) return;
+
+      if (update.state === UpdateConnectionState.connected) {
+        if (reconnecting) {
+          console.log("[conexion] Reconectado.");
+        } else if (!seenConnectedState) {
+          console.log("[conexion] Conectado.");
+        }
+
+        reconnecting = false;
+        seenConnectedState = true;
+        return;
+      }
+
+      if (update.state === UpdateConnectionState.disconnected) {
+        if (!reconnecting) {
+          console.log("[conexion] Conexion perdida. Esperando reconexion automatica...");
+        }
+        reconnecting = true;
+        return;
+      }
+
+      if (update.state === UpdateConnectionState.broken) {
+        console.log("[conexion] Conexion en estado inestable.");
+        reconnecting = true;
+      }
+    },
+    new Raw({ types: [UpdateConnectionState] })
   );
 
   await client.start({
@@ -138,18 +212,23 @@ async function main() {
         if (senderId !== targetId) continue;
 
         try {
-          await client.forwardMessages(destEntity, {
-            messages: [msg.id],
-            fromPeer: groupEntity,
-          });
-          const timestamp = new Date().toLocaleString("es-AR");
-          console.log(`[${timestamp}] Mensaje reenviado (msg ID: ${msg.id})`);
+          const enviado = await enviarCopia(client, destEntity, msg);
+          if (enviado) {
+            const timestamp = new Date().toLocaleString("es-AR");
+            console.log(`[${timestamp}] Mensaje enviado (msg ID: ${msg.id})`);
+          }
         } catch (err) {
-          console.error(`Error al reenviar mensaje ID ${msg.id}:`, err.message);
+          console.error(`Error al enviar mensaje ID ${msg.id}:`, err.message);
         }
       }
     } catch (err) {
-      console.error("Error al consultar mensajes:", err.message);
+      if (err.message === "TIMEOUT" || err.message === "Not connected") {
+        if (!reconnecting) {
+          console.log("[polling] Error temporal de conexion; esperando reconexion automatica...");
+        }
+      } else {
+        console.error("Error al consultar mensajes:", err.message);
+      }
     }
   }, POLL_INTERVAL_MS);
 }
