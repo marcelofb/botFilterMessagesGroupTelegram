@@ -9,7 +9,9 @@
     "list": "node index.js --list"
   },
   "dependencies": {
+    "axios": "^1.15.2",
     "dotenv": "^16.4.5",
+    "form-data": "^4.0.5",
     "input": "^1.0.1",
     "telegram": "^2.26.22"
   }

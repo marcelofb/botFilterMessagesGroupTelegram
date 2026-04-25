@@ -5,6 +5,8 @@ const { UpdateConnectionState } = require("telegram/network");
 const input = require("input");
 const fs = require("fs");
 const path = require("path");
+const axios = require("axios");
+const FormData = require("form-data");
 require("dotenv").config();
 
 const SESSION_FILE = path.join(__dirname, "session.txt");
@@ -18,29 +20,68 @@ function saveSession(str) {
   fs.writeFileSync(SESSION_FILE, str, "utf-8");
 }
 
-// Envía una copia del mensaje como mensaje nuevo (no como forward)
-// para que Telegram dispare la notificación push en el destino
-async function enviarCopia(client, dest, msg) {
-  // Ignorar mensajes de servicio (pin, cambio de nombre del grupo, etc.)
+// Envía el mensaje usando el Bot API para que Telegram dispare notificación push
+async function enviarViaBot(botToken, chatId, msg, client) {
   if (msg.className === "MessageService") return false;
 
   const text = msg.message || "";
-  const entities = msg.entities && msg.entities.length ? msg.entities : undefined;
+  const apiBase = `https://api.telegram.org/bot${botToken}`;
 
   if (msg.media) {
-    await client.sendFile(dest, {
-      file: msg.media,
-      caption: text,
-      formattingEntities: entities,
-    });
+    let endpoint, fileField, mimeType;
+    const mediaClass = msg.media.className;
+
+    if (mediaClass === "MessageMediaPhoto") {
+      endpoint = "sendPhoto";
+      fileField = "photo";
+      mimeType = "image/jpeg";
+    } else if (mediaClass === "MessageMediaDocument") {
+      const doc = msg.media.document;
+      const attrs = doc.attributes || [];
+      const hasVideo = attrs.some(a => a.className === "DocumentAttributeVideo");
+      const audioAttr = attrs.find(a => a.className === "DocumentAttributeAudio");
+      const mime = doc.mimeType || "";
+
+      if (hasVideo || mime.startsWith("video/")) {
+        endpoint = "sendVideo";
+        fileField = "video";
+        mimeType = mime || "video/mp4";
+      } else if (audioAttr && audioAttr.voice) {
+        endpoint = "sendVoice";
+        fileField = "voice";
+        mimeType = mime || "audio/ogg";
+      } else if (audioAttr || mime.startsWith("audio/")) {
+        endpoint = "sendAudio";
+        fileField = "audio";
+        mimeType = mime || "audio/mpeg";
+      } else {
+        endpoint = "sendDocument";
+        fileField = "document";
+        mimeType = mime || "application/octet-stream";
+      }
+    } else {
+      // Tipo de media no soportado (geo, contacto, etc.) — enviar solo texto si hay
+      if (text) {
+        await axios.post(`${apiBase}/sendMessage`, { chat_id: chatId, text });
+      }
+      return true;
+    }
+
+    const fileBytes = await client.downloadMedia(msg.media, {});
+    if (!fileBytes || fileBytes.length === 0) return false;
+
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append(fileField, fileBytes, { filename: fileField, contentType: mimeType });
+    if (text) form.append("caption", text);
+
+    await axios.post(`${apiBase}/${endpoint}`, form, { headers: form.getHeaders() });
   } else if (text) {
-    await client.sendMessage(dest, {
-      message: text,
-      formattingEntities: entities,
-    });
+    await axios.post(`${apiBase}/sendMessage`, { chat_id: String(chatId), text });
   } else {
     return false;
   }
+
   return true;
 }
 
@@ -144,14 +185,14 @@ async function main() {
     return;
   }
 
-  const { SOURCE_GROUP, SOURCE_USER, DEST_CHAT } = process.env;
+  const { SOURCE_GROUP, SOURCE_USER, BOT_TOKEN, TELEGRAM_CHAT_ID } = process.env;
 
-  if (!SOURCE_GROUP || !SOURCE_USER || !DEST_CHAT) {
-    console.error("\nError: SOURCE_GROUP, SOURCE_USER y DEST_CHAT son requeridos en .env\n");
+  if (!SOURCE_GROUP || !SOURCE_USER || !BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.error("\nError: SOURCE_GROUP, SOURCE_USER, BOT_TOKEN y TELEGRAM_CHAT_ID son requeridos en .env\n");
     process.exit(1);
   }
 
-  let groupEntity, userEntity, destEntity;
+  let groupEntity, userEntity;
 
   try {
     groupEntity = await client.getEntity(resolveId(SOURCE_GROUP));
@@ -167,20 +208,12 @@ async function main() {
     process.exit(1);
   }
 
-  try {
-    destEntity = await client.getEntity(resolveId(DEST_CHAT));
-  } catch (e) {
-    console.error(`No se pudo resolver DEST_CHAT="${DEST_CHAT}": ${e.message}`);
-    process.exit(1);
-  }
-
   const targetId = userEntity.id.toString();
   const groupName = groupEntity.title || groupEntity.username;
-  const destName = destEntity.title || destEntity.username || String(destEntity.id);
 
-  console.log(`\nEscuchando en:    "${groupName}"`);
-  console.log(`Filtrando usuario: @${userEntity.username} (ID: ${targetId})`);
-  console.log(`Reenviando a:      "${destName}"\n`);
+  console.log(`\nEscuchando en:     "${groupName}"`);
+  console.log(`Filtrando usuario:  @${userEntity.username} (ID: ${targetId})`);
+  console.log(`Reenviando a:       chat ID ${TELEGRAM_CHAT_ID} via bot\n`);
 
   // Inicializa el estado de updates del servidor
   await client.getDialogs({ limit: 10 });
@@ -212,7 +245,7 @@ async function main() {
         if (senderId !== targetId) continue;
 
         try {
-          const enviado = await enviarCopia(client, destEntity, msg);
+          const enviado = await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, msg, client);
           if (enviado) {
             const timestamp = new Date().toLocaleString("es-AR");
             console.log(`[${timestamp}] Mensaje enviado (msg ID: ${msg.id})`);
