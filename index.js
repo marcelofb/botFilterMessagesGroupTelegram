@@ -227,7 +227,7 @@ async function main() {
 
   const POLL_INTERVAL_MS = 5000; // consultar cada 5 segundos
 
-  setInterval(async () => {
+  const timer = setInterval(async () => {
     try {
       const messages = await client.getMessages(groupEntity, {
         limit: 20,
@@ -258,6 +258,18 @@ async function main() {
       if (err.message === "TIMEOUT" || err.message === "Not connected") {
         if (!reconnecting) {
           console.log("[polling] Error temporal de conexion; esperando reconexion automatica...");
+        }
+      } else if (err.message && (err.message.includes("SESSION_REVOKED") || err.message.includes("AUTH_KEY_UNREGISTERED") || (err.code && err.code === 401))) {
+        clearInterval(timer);
+        console.error("[SESSION_REVOKED] Sesion de Telegram revocada. Regenera la sesion localmente, actualiza SESSION en Railway y haz redeploy.");
+        try {
+          await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+            chat_id: String(TELEGRAM_CHAT_ID),
+            text: "⚠️ *Sesión de Telegram revocada.*\n\nEl forwarder dejó de funcionar.\n\n*Pasos para restaurarlo:*\n1. Corré `npm start` localmente\n2. Autenticáte con tu teléfono\n3. Copiá el contenido de `session.txt`\n4. Actualizá la variable `SESSION` en Railway\n5. Hacé redeploy",
+            parse_mode: "Markdown",
+          });
+        } catch (notifyErr) {
+          console.error("[SESSION_REVOKED] No se pudo enviar notificacion al bot:", notifyErr.message);
         }
       } else {
         console.error("Error al consultar mensajes:", err.message);
