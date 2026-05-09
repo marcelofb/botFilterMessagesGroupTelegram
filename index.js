@@ -21,10 +21,11 @@ function saveSession(str) {
 }
 
 // Envía el mensaje usando el Bot API para que Telegram dispare notificación push
-async function enviarViaBot(botToken, chatId, msg, client) {
+async function enviarViaBot(botToken, chatId, msg, client, prefixText = "") {
   if (msg.className === "MessageService") return false;
 
-  const text = msg.message || "";
+  const rawText = msg.message || "";
+  const text = prefixText ? (rawText ? `${prefixText}\n${rawText}` : prefixText) : rawText;
   const apiBase = `https://api.telegram.org/bot${botToken}`;
 
   if (msg.media) {
@@ -245,10 +246,20 @@ async function main() {
         if (senderId !== targetId) continue;
 
         try {
-          const enviado = await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, msg, client);
+          const replyToMsgId = msg.replyTo?.replyToMsgId;
+
+          if (replyToMsgId) {
+            const [originalMsg] = await client.getMessages(groupEntity, { ids: [replyToMsgId] });
+            if (originalMsg) {
+              await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, originalMsg, client, "📩 Mensaje original:");
+            }
+          }
+
+          const prefixRespuesta = replyToMsgId ? "↩️ Respuesta:" : "";
+          const enviado = await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, msg, client, prefixRespuesta);
           if (enviado) {
             const timestamp = new Date().toLocaleString("es-AR");
-            console.log(`[${timestamp}] Mensaje enviado (msg ID: ${msg.id})`);
+            console.log(`[${timestamp}] Mensaje enviado (msg ID: ${msg.id})${replyToMsgId ? " [con contexto de respuesta]" : ""}`);
           }
         } catch (err) {
           console.error(`Error al enviar mensaje ID ${msg.id}:`, err.message);
