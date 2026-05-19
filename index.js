@@ -112,7 +112,11 @@ async function getMessageChain(client, groupEntity, startMsgId, maxDepth = 20) {
     const [msg] = await client.getMessages(groupEntity, { ids: [currentId] });
     if (!msg) break;
     chain.unshift(msg);
-    currentId = msg.replyTo?.replyToMsgId ?? null;
+    // Si el siguiente replyToMsgId es igual al replyToTopId, es solo contexto de topic/foro
+    // y no una respuesta genuina; detenemos la cadena ahí
+    const nextId = msg.replyTo?.replyToMsgId ?? null;
+    const topId = msg.replyTo?.replyToTopId ?? null;
+    currentId = (nextId && topId && nextId === topId) ? null : nextId;
     depth++;
   }
 
@@ -272,7 +276,15 @@ async function main() {
         if (senderId !== targetId) continue;
 
         try {
-          const replyToMsgId = msg.replyTo?.replyToMsgId;
+          // replyToTopId presente e igual a replyToMsgId → mensaje en un topic/foro,
+          // no es una respuesta genuina del usuario
+          const replyToMsgId = (() => {
+            const msgId = msg.replyTo?.replyToMsgId;
+            if (!msgId) return null;
+            const topId = msg.replyTo?.replyToTopId;
+            if (topId && msgId === topId) return null; // solo pertenece al topic, no es reply
+            return msgId;
+          })();
 
           if (replyToMsgId) {
             const chain = await getMessageChain(client, groupEntity, replyToMsgId);
