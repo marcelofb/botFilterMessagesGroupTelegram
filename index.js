@@ -93,6 +93,32 @@ function resolveId(value) {
   return `@${clean}`;
 }
 
+// Obtiene el nombre visible de un remitente
+function senderName(msg) {
+  const s = msg.sender;
+  if (!s) return "desconocido";
+  if (s.username) return `@${s.username}`;
+  if (s.firstName) return s.firstName + (s.lastName ? ` ${s.lastName}` : "");
+  return "desconocido";
+}
+
+// Sigue la cadena de replies hacia atrás y devuelve los mensajes en orden cronológico
+async function getMessageChain(client, groupEntity, startMsgId, maxDepth = 20) {
+  const chain = [];
+  let currentId = startMsgId;
+  let depth = 0;
+
+  while (currentId && depth < maxDepth) {
+    const [msg] = await client.getMessages(groupEntity, { ids: [currentId] });
+    if (!msg) break;
+    chain.unshift(msg);
+    currentId = msg.replyTo?.replyToMsgId ?? null;
+    depth++;
+  }
+
+  return chain;
+}
+
 async function main() {
   const API_ID = parseInt(process.env.API_ID, 10);
   const API_HASH = process.env.API_HASH;
@@ -249,9 +275,19 @@ async function main() {
           const replyToMsgId = msg.replyTo?.replyToMsgId;
 
           if (replyToMsgId) {
-            const [originalMsg] = await client.getMessages(groupEntity, { ids: [replyToMsgId] });
-            if (originalMsg) {
-              await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, originalMsg, client, "📩 Mensaje original:");
+            const chain = await getMessageChain(client, groupEntity, replyToMsgId);
+            if (chain.length === 1) {
+              const nombre = senderName(chain[0]);
+              await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, chain[0], client, `📩 Mensaje original (${nombre}):`);
+            } else if (chain.length > 1) {
+              await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+                chat_id: String(TELEGRAM_CHAT_ID),
+                text: "🧵 Hilo de conversación:",
+              });
+              for (let i = 0; i < chain.length; i++) {
+                const nombre = senderName(chain[i]);
+                await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, chain[i], client, `📩 [${i + 1}/${chain.length}] ${nombre}:`);
+              }
             }
           }
 
