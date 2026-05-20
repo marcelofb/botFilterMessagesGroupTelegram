@@ -4,7 +4,9 @@ Reenvía automáticamente los mensajes de un usuario específico en un grupo de 
 
 ## ¿Cómo funciona?
 
-El script se conecta a tu cuenta de Telegram usando la API MTProto, monitorea un grupo y reenvía en tiempo real (polling cada 5 segundos) todos los mensajes de un usuario determinado al destino que configures.
+El script se conecta a tu cuenta de Telegram usando la API MTProto, monitorea un grupo y reenvía en tiempo real (polling cada 5 segundos) todos los mensajes de un usuario determinado a tu chat personal vía bot.
+
+Cuando el mensaje es una respuesta, se envía primero la cadena completa de mensajes previos del hilo (con el username de cada remitente) para que puedas entender el contexto.
 
 ## Requisitos
 
@@ -41,9 +43,11 @@ Editá el archivo `.env`:
 API_ID=tu_api_id
 API_HASH=tu_api_hash
 
-SOURCE_GROUP=-1001234567890   # ID o username del grupo a monitorear
-SOURCE_USER=username_del_usuario  # Username del usuario a seguir (sin @)
-DEST_CHAT=@tu_bot_o_chat     # Destino de los mensajes reenviados
+SOURCE_GROUP=-1001234567890      # ID o username del grupo a monitorear
+SOURCE_USER=username_del_usuario # Username del usuario a seguir (sin @)
+
+BOT_TOKEN=123456:ABC-DEF...      # Token del bot obtenido en @BotFather
+TELEGRAM_CHAT_ID=123456789       # Tu ID numérico personal (obtenelo con @userinfobot)
 ```
 
 ### Descubrir el ID de un grupo
@@ -70,6 +74,46 @@ Al iniciarse por primera vez pedirá el número de teléfono y el código de ver
 |---|---|
 | `npm start` | Inicia el forwarder |
 | `npm run list` | Lista todos los grupos/canales con sus IDs |
+
+## Despliegue en Google Cloud (Free Tier)
+
+El bot corre en una VM `e2-micro` de Google Cloud, que es gratuita de por vida en las regiones `us-central1`, `us-west1` o `us-east1`.
+
+### Aplicar cambios tras un push al repo
+
+Conectarse a la VM vía SSH (botón SSH en Google Cloud Console) y ejecutar:
+
+```bash
+cd telegram-forwarder
+git pull
+pm2 restart telegram-forwarder
+```
+
+### Verificar que está corriendo
+
+```bash
+pm2 status
+pm2 logs telegram-forwarder
+```
+
+### Actualizar la sesión de Telegram
+
+Si la sesión expira o se invalida, regenerarla localmente:
+
+```bash
+# En tu máquina local — asegurate de que SESSION= esté vacío en .env
+del session.txt
+node index.js
+# Autenticáte con teléfono y código, luego Ctrl+C
+```
+
+Copiar el contenido del nuevo `session.txt` y en la VM:
+
+```bash
+nano .env   # actualizar SESSION= con el nuevo valor
+rm -f session.txt
+pm2 restart telegram-forwarder
+```
 
 ## Seguridad
 
