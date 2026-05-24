@@ -288,17 +288,19 @@ async function main() {
 
           if (replyToMsgId) {
             const chain = await getMessageChain(client, groupEntity, replyToMsgId);
-            if (chain.length === 1) {
-              const nombre = senderName(chain[0]);
-              await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, chain[0], client, `📩 Mensaje original (${nombre}):`);
-            } else if (chain.length > 1) {
+            // Excluir mensajes del propio usuario rastreado (ya fueron reenviados)
+            const contextChain = chain.filter(m => m.senderId?.toString() !== targetId);
+            if (contextChain.length === 1) {
+              const nombre = senderName(contextChain[0]);
+              await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, contextChain[0], client, `📩 Mensaje original (${nombre}):`);
+            } else if (contextChain.length > 1) {
               await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
                 chat_id: String(TELEGRAM_CHAT_ID),
                 text: "🧵 Hilo de conversación:",
               });
-              for (let i = 0; i < chain.length; i++) {
-                const nombre = senderName(chain[i]);
-                await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, chain[i], client, `📩 [${i + 1}/${chain.length}] ${nombre}:`);
+              for (let i = 0; i < contextChain.length; i++) {
+                const nombre = senderName(contextChain[i]);
+                await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, contextChain[i], client, `📩 [${i + 1}/${contextChain.length}] ${nombre}:`);
               }
             }
           }
