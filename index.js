@@ -112,11 +112,7 @@ async function getMessageChain(client, groupEntity, startMsgId, maxDepth = 20) {
     const [msg] = await client.getMessages(groupEntity, { ids: [currentId] });
     if (!msg) break;
     chain.unshift(msg);
-    // Si el siguiente replyToMsgId es igual al replyToTopId, es solo contexto de topic/foro
-    // y no una respuesta genuina; detenemos la cadena ahí
-    const nextId = msg.replyTo?.replyToMsgId ?? null;
-    const topId = msg.replyTo?.replyToTopId ?? null;
-    currentId = (nextId && topId && nextId === topId) ? null : nextId;
+    currentId = msg.replyTo?.replyToMsgId ?? null;
     depth++;
   }
 
@@ -276,20 +272,11 @@ async function main() {
         if (senderId !== targetId) continue;
 
         try {
-          // replyToTopId presente e igual a replyToMsgId → mensaje en un topic/foro,
-          // no es una respuesta genuina del usuario
-          const replyToMsgId = (() => {
-            const msgId = msg.replyTo?.replyToMsgId;
-            if (!msgId) return null;
-            const topId = msg.replyTo?.replyToTopId;
-            if (topId && msgId === topId) return null; // solo pertenece al topic, no es reply
-            return msgId;
-          })();
+          const replyToMsgId = msg.replyTo?.replyToMsgId ?? null;
 
           if (replyToMsgId) {
             const chain = await getMessageChain(client, groupEntity, replyToMsgId);
-            // Excluir mensajes del propio usuario rastreado (ya fueron reenviados)
-            const contextChain = chain.filter(m => m.senderId?.toString() !== targetId);
+            const contextChain = chain;
             if (contextChain.length === 1) {
               const nombre = senderName(contextChain[0]);
               await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, contextChain[0], client, `📩 Mensaje original (${nombre}):`);
