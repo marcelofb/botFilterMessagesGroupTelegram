@@ -102,6 +102,18 @@ function senderName(msg) {
   return "desconocido";
 }
 
+// Devuelve el ID del mensaje respondido solo para replies genuinos.
+// En topics/foros, Telegram puede setear replyToMsgId = replyToTopId como anclaje del hilo.
+function getRealReplyMsgId(msg) {
+  const replyToMsgId = msg.replyTo?.replyToMsgId ?? null;
+  if (!replyToMsgId) return null;
+
+  const replyToTopId = msg.replyTo?.replyToTopId ?? null;
+  if (replyToTopId && replyToMsgId === replyToTopId) return null;
+
+  return replyToMsgId;
+}
+
 // Sigue la cadena de replies hacia atrás y devuelve los mensajes en orden cronológico
 async function getMessageChain(client, groupEntity, startMsgId, maxDepth = 20) {
   const chain = [];
@@ -272,7 +284,7 @@ async function main() {
         if (senderId !== targetId) continue;
 
         try {
-          const replyToMsgId = msg.replyTo?.replyToMsgId ?? null;
+          const replyToMsgId = getRealReplyMsgId(msg);
 
           if (replyToMsgId) {
             const chain = await getMessageChain(client, groupEntity, replyToMsgId);
@@ -297,6 +309,9 @@ async function main() {
           if (enviado) {
             const timestamp = new Date().toLocaleString("es-AR");
             console.log(`[${timestamp}] Mensaje enviado (msg ID: ${msg.id})${replyToMsgId ? " [con contexto de respuesta]" : ""}`);
+          } else if (msg.replyTo?.replyToMsgId && !replyToMsgId) {
+            const timestamp = new Date().toLocaleString("es-AR");
+            console.log(`[${timestamp}] Mensaje en topic sin reply real (msg ID: ${msg.id})`);
           }
         } catch (err) {
           console.error(`Error al enviar mensaje ID ${msg.id}:`, err.message);
