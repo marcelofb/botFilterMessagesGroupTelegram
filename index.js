@@ -60,6 +60,18 @@ async function enviarViaBot(botToken, chatId, msg, client, prefixText = "") {
         fileField = "document";
         mimeType = mime || "application/octet-stream";
       }
+
+      // Saltar archivos mayores a 50 MB para no agotar la RAM
+      const MAX_FILE_BYTES = 50 * 1024 * 1024;
+      if (doc.size && doc.size > MAX_FILE_BYTES) {
+        const aviso = text
+          ? `${text}
+
+⚠️ (archivo omitido: ${(doc.size / 1024 / 1024).toFixed(1)} MB supera el límite de 50 MB)`
+          : `⚠️ Archivo omitido: ${(doc.size / 1024 / 1024).toFixed(1)} MB supera el límite de 50 MB`;
+        await axios.post(`${apiBase}/sendMessage`, { chat_id: String(chatId), text: aviso });
+        return true;
+      }
     } else {
       // Tipo de media no soportado (geo, contacto, etc.) — enviar solo texto si hay
       if (text) {
@@ -147,8 +159,9 @@ async function main() {
     API_ID,
     API_HASH,
     {
-      connectionRetries: 5,
-      requestRetries: 5,
+      connectionRetries: 100,
+      requestRetries: 10,
+      retryDelay: 3000,
       autoReconnect: true,
       sequentialUpdates: true,
     }
@@ -193,8 +206,9 @@ async function main() {
       }
 
       if (update.state === UpdateConnectionState.broken) {
-        console.log("[conexion] Conexion en estado inestable.");
+        console.log("[conexion] Conexion en estado roto (broken). Reiniciando proceso para que PM2 lo levante limpio...");
         reconnecting = true;
+        setTimeout(() => process.exit(1), 3000);
       }
     },
     new Raw({ types: [UpdateConnectionState] })
@@ -265,9 +279,15 @@ async function main() {
   console.log(`Último mensaje conocido del grupo: ID ${lastSeenId}\n`);
 
   const POLL_INTERVAL_MS = 5000; // consultar cada 5 segundos
+  let consecutiveNotConnected = 0;
+  const MAX_NOT_CONNECTED = 12; // ~60s de fallas consecutivas → reiniciar
+  let isPolling = false; // evita polls superpuestos
 
   const timer = setInterval(async () => {
+    if (isPolling) return;
+    isPolling = true;
     try {
+      consecutiveNotConnected = 0;
       const messages = await client.getMessages(groupEntity, {
         limit: 20,
         minId: lastSeenId,
@@ -319,8 +339,15 @@ async function main() {
       }
     } catch (err) {
       if (err.message === "TIMEOUT" || err.message === "Not connected") {
+        consecutiveNotConnected++;
         if (!reconnecting) {
           console.log("[polling] Error temporal de conexion; esperando reconexion automatica...");
+        }
+        if (consecutiveNotConnected >= MAX_NOT_CONNECTED) {
+          console.log(`[polling] ${consecutiveNotConnected} fallas consecutivas de conexion. Reiniciando proceso...`);
+          clearInterval(timer);
+          setTimeout(() => process.exit(1), 1000);
+          return;
         }
       } else if (err.message && (err.message.includes("SESSION_REVOKED") || err.message.includes("AUTH_KEY_UNREGISTERED") || (err.code && err.code === 401))) {
         clearInterval(timer);
@@ -337,6 +364,8 @@ async function main() {
       } else {
         console.error("Error al consultar mensajes:", err.message);
       }
+    } finally {
+      isPolling = false;
     }
   }, POLL_INTERVAL_MS);
 }
