@@ -11,6 +11,16 @@ require("dotenv").config();
 
 const SESSION_FILE = path.join(__dirname, "session.txt");
 
+// Aborta una promesa que tarda demasiado para que un getMessages "colgado"
+// (conexion rota que nunca lanza ni resuelve) no bloquee el loop de polling.
+function withTimeout(promise, ms, label = "operacion") {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`TIMEOUT_LOCAL: ${label} supero ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function loadSession() {
   if (fs.existsSync(SESSION_FILE)) return fs.readFileSync(SESSION_FILE, "utf-8").trim();
   return process.env.SESSION || "";
@@ -169,6 +179,9 @@ async function main() {
 
   let reconnecting = false;
   let seenConnectedState = false;
+  // Marca de tiempo de la ultima actividad exitosa (poll o reconexion).
+  // El watchdog reinicia el proceso si pasa demasiado tiempo sin actividad.
+  let lastSuccessfulActivity = Date.now();
 
   client.onError = async (err) => {
     if (!err) return;
@@ -194,6 +207,7 @@ async function main() {
 
         reconnecting = false;
         seenConnectedState = true;
+        lastSuccessfulActivity = Date.now();
         return;
       }
 
@@ -279,19 +293,40 @@ async function main() {
   console.log(`Último mensaje conocido del grupo: ID ${lastSeenId}\n`);
 
   const POLL_INTERVAL_MS = 5000; // consultar cada 5 segundos
-  let consecutiveNotConnected = 0;
-  const MAX_NOT_CONNECTED = 12; // ~60s de fallas consecutivas → reiniciar
+  const GET_MESSAGES_TIMEOUT_MS = 20000; // abortar getMessages si no responde en 20s
+  const STALL_LIMIT_MS = 90000; // sin actividad exitosa por 90s → reiniciar proceso
   let isPolling = false; // evita polls superpuestos
+  let restarting = false;
 
-  const timer = setInterval(async () => {
-    if (isPolling) return;
+  // Watchdog independiente del loop: si el bot queda "colgado" sin reconectar
+  // (getMessages que lanza error eterno o que nunca resuelve), reinicia el
+  // proceso para que PM2 lo levante limpio. Esta es la red de seguridad real.
+  let timer;
+  const watchdog = setInterval(() => {
+    const stalledMs = Date.now() - lastSuccessfulActivity;
+    if (stalledMs >= STALL_LIMIT_MS && !restarting) {
+      restarting = true;
+      console.log(`[watchdog] Sin actividad exitosa por ${Math.round(stalledMs / 1000)}s. Reiniciando proceso para que PM2 lo levante limpio...`);
+      clearInterval(timer);
+      clearInterval(watchdog);
+      setTimeout(() => process.exit(1), 1000);
+    }
+  }, 15000);
+
+  timer = setInterval(async () => {
+    if (isPolling || restarting) return;
     isPolling = true;
     try {
-      consecutiveNotConnected = 0;
-      const messages = await client.getMessages(groupEntity, {
-        limit: 20,
-        minId: lastSeenId,
-      });
+      const messages = await withTimeout(
+        client.getMessages(groupEntity, {
+          limit: 20,
+          minId: lastSeenId,
+        }),
+        GET_MESSAGES_TIMEOUT_MS,
+        "getMessages"
+      );
+      // El poll respondio: la conexion esta viva.
+      lastSuccessfulActivity = Date.now();
 
       // getMessages devuelve del más reciente al más viejo; procesar en orden cronológico
       const ordered = messages.slice().reverse();
@@ -326,6 +361,9 @@ async function main() {
 
           const prefixRespuesta = replyToMsgId ? "↩️ Respuesta:" : "";
           const enviado = await enviarViaBot(BOT_TOKEN, TELEGRAM_CHAT_ID, msg, client, prefixRespuesta);
+          // Procesar un mensaje (incluso una descarga larga de media) cuenta
+          // como actividad para que el watchdog no reinicie en medio del trabajo.
+          lastSuccessfulActivity = Date.now();
           if (enviado) {
             const timestamp = new Date().toLocaleString("es-AR");
             console.log(`[${timestamp}] Mensaje enviado (msg ID: ${msg.id})${replyToMsgId ? " [con contexto de respuesta]" : ""}`);
@@ -338,19 +376,16 @@ async function main() {
         }
       }
     } catch (err) {
-      if (err.message === "TIMEOUT" || err.message === "Not connected") {
-        consecutiveNotConnected++;
+      const msgErr = err.message || "";
+      if (msgErr === "TIMEOUT" || msgErr === "Not connected" || msgErr.startsWith("TIMEOUT_LOCAL")) {
+        // No actualizamos lastSuccessfulActivity: si esto persiste, el watchdog
+        // reiniciara el proceso al superar STALL_LIMIT_MS.
         if (!reconnecting) {
-          console.log("[polling] Error temporal de conexion; esperando reconexion automatica...");
+          console.log("[polling] Error temporal de conexion; esperando reconexion automatica (watchdog activo)...");
         }
-        if (consecutiveNotConnected >= MAX_NOT_CONNECTED) {
-          console.log(`[polling] ${consecutiveNotConnected} fallas consecutivas de conexion. Reiniciando proceso...`);
-          clearInterval(timer);
-          setTimeout(() => process.exit(1), 1000);
-          return;
-        }
-      } else if (err.message && (err.message.includes("SESSION_REVOKED") || err.message.includes("AUTH_KEY_UNREGISTERED") || (err.code && err.code === 401))) {
+      } else if (msgErr && (msgErr.includes("SESSION_REVOKED") || msgErr.includes("AUTH_KEY_UNREGISTERED") || (err.code && err.code === 401))) {
         clearInterval(timer);
+        clearInterval(watchdog);
         console.error("[SESSION_REVOKED] Sesion de Telegram revocada. Regenera la sesion localmente, actualiza SESSION en Railway y haz redeploy.");
         try {
           await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
