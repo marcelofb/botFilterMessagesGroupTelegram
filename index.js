@@ -165,17 +165,19 @@ async function main() {
   }
 
   const client = new TelegramClient(
-    new StringSession(loadSession()),
-    API_ID,
-    API_HASH,
-    {
-      connectionRetries: 100,
-      requestRetries: 10,
-      retryDelay: 3000,
-      autoReconnect: true,
-      sequentialUpdates: true,
+    new StringSession(loadSession()), 
+    API_ID, 
+    API_HASH, 
+    { 
+        connectionRetries: 5,        // Menos intentos para evitar saturar la VM
+        requestRetries: 3,           // Reducido para evitar peticiones duplicadas colgadas
+        retryDelay: 5000,            // 5 segundos entre intentos (da respiro a la red)
+        autoReconnect: true, 
+        sequentialUpdates: true,
+        useWss: true,                // 🔥 CLAVE: Fuerza WebSockets Seguros, ideal para la nube
+        timeout: 10000,              // Evita que las peticiones se queden esperando para siempre
     }
-  );
+);
 
   let reconnecting = false;
   let seenConnectedState = false;
